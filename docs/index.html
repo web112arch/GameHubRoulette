@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GameHubRoulette</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 0; background: #0b0c10; color: #e6e6e6; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 28px 16px 60px; }
+    .card { background: #12141b; border: 1px solid #222636; border-radius: 16px; padding: 18px; margin-top: 16px; }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { line-height: 1.5; color: #cfd3df; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    button, input {
+      border-radius: 12px; border: 1px solid #2a2f43; background: #181b26;
+      color: #e6e6e6; padding: 12px 14px; font-size: 14px;
+    }
+    button { cursor: pointer; }
+    button:hover { background: #1d2130; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    input { width: 220px; }
+    .pill { display: inline-block; padding: 6px 10px; border-radius: 999px; border: 1px solid #2a2f43; color:#cfd3df; font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .status { margin-top: 10px; white-space: pre-wrap; }
+    a { color: #8ab4ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 860px) { .grid { grid-template-columns: 1.2fr .8fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎮 GameHubRoulette</h1>
+    <p>
+      Hub simples on-chain para registrar ações de jogo, girar uma roleta (só gas) e distribuir prêmios (owner).
+      <span class="pill">Random fraco — não use para apostas com dinheiro</span>
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h2 style="margin:0 0 10px;">🎲 Roleta</h2>
+        <p style="margin:0 0 14px;">
+          Conecte sua wallet, escolha um <span class="mono">gameId</span> e um <span class="mono">maxInt</span>, e gire.
+          O resultado aparece lendo o evento <span class="mono">RouletteSpin</span>.
+        </p>
+
+        <div class="row">
+          <button id="btnConnect">Conectar Wallet</button>
+          <span class="pill mono" id="walletPill">desconectado</span>
+        </div>
+
+        <div class="row">
+          <input id="gameId" placeholder="gameId (ex: GAME1)" value="GAME1" />
+          <input id="maxInt" placeholder="maxInt (ex: 10)" value="10" />
+          <button id="btnSpin" disabled>Spin Roulette</button>
+        </div>
+
+        <div class="status" id="status"></div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;">ℹ️ Contrato</h2>
+        <p style="margin:0 0 10px;">
+          Endereço:
+          <span class="mono" id="contractAddr"></span>
+        </p>
+        <p style="margin:0 0 10px;">
+          Rede:
+          <span class="mono" id="chainName"></span>
+        </p>
+        <p style="margin:0;">
+          Dica: depois de publicar, coloque o link do explorer aqui também (BaseScan/Etherscan).
+        </p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 10px;">📦 Código no GitHub</h2>
+      <p style="margin:0;">
+        Este site é estático (HTML/JS) e pode ser publicado com GitHub Pages usando a pasta <span class="mono">/docs</span>.
+      </p>
+    </div>
+  </div>
+
+  <!-- ethers v6 -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <script>
+    // ==========================
+    // ✅ TROQUE AQUI
+    // ==========================
+    const CONTRACT_ADDRESS = "COLE_AQUI_O_ENDERECO_DO_SEU_CONTRATO";
+
+    // Rede padrão (Base Mainnet). Se seu deploy foi Base Sepolia, mude para 84532
+    const TARGET_CHAIN_ID = 8453; // Base Mainnet: 8453 | Base Sepolia: 84532
+
+    // ABI mínimo só do que vamos usar no site
+    const ABI = [
+      "function spinRoulette(string gameId, uint256 maxInt) external returns (uint256)",
+      "event RouletteSpin(address indexed player, string gameId, uint256 result, uint256 maxInt, uint256 timestamp)"
+    ];
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+    const btnConnect = $("btnConnect");
+    const btnSpin = $("btnSpin");
+    const walletPill = $("walletPill");
+
+    $("contractAddr").textContent = CONTRACT_ADDRESS;
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    function chainLabel(chainId) {
+      if (chainId === 8453) return "Base Mainnet (8453)";
+      if (chainId === 84532) return "Base Sepolia (84532)";
+      return "ChainId " + chainId;
+    }
+
+    $("chainName").textContent = chainLabel(TARGET_CHAIN_ID);
+
+    let provider, signer, contract, currentAccount;
+
+    async function ensureMetaMask() {
+      if (!window.ethereum) {
+        setStatus("❌ MetaMask não encontrada. Instale a extensão e tente novamente.");
+        throw new Error("No wallet");
+      }
+    }
+
+    async function ensureNetwork() {
+      const net = await provider.getNetwork();
+      const current = Number(net.chainId);
+
+      if (current !== TARGET_CHAIN_ID) {
+        setStatus(`⚠️ Rede errada: você está em ${chainLabel(current)}.\nTente trocar para ${chainLabel(TARGET_CHAIN_ID)} na MetaMask.`);
+        throw new Error("Wrong network");
+      }
+    }
+
+    async function connect() {
+      await ensureMetaMask();
+
+      provider = new ethers.BrowserProvider(window.ethereum);
+      const accounts = await provider.send("eth_requestAccounts", []);
+      currentAccount = accounts?.[0];
+
+      signer = await provider.getSigner();
+      contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
+      walletPill.textContent = currentAccount
+        ? (currentAccount.slice(0,6) + "..." + currentAccount.slice(-4))
+        : "desconectado";
+
+      await ensureNetwork();
+
+      btnSpin.disabled = !currentAccount || !CONTRACT_ADDRESS || CONTRACT_ADDRESS.includes("COLE_AQUI");
+      setStatus("✅ Wallet conectada. Pronto para girar.");
+    }
+
+    async function spin() {
+      try {
+        btnSpin.disabled = true;
+
+        const gameId = $("gameId").value?.trim() || "GAME1";
+        const maxIntStr = $("maxInt").value?.trim() || "10";
+        const maxInt = BigInt(maxIntStr);
+
+        setStatus("⏳ Enviando transação...");
+
+        // Envia tx
+        const tx = await contract.spinRoulette(gameId, maxInt);
+        setStatus("⏳ Tx enviada. Aguardando confirmação...\n" + tx.hash);
+
+        const receipt = await tx.wait();
+
+        // Procura o evento RouletteSpin no receipt
+        let found = null;
+        for (const log of receipt.logs) {
+          try {
+            const parsed = contract.interface.parseLog(log);
+            if (parsed && parsed.name === "RouletteSpin") {
+              found = parsed.args;
+              break;
+            }
+          } catch (e) {}
+        }
+
+        if (found) {
+          setStatus(
+            "✅ Confirmado!\n" +
+            "gameId: " + found.gameId + "\n" +
+            "result: " + found.result.toString() + "\n" +
+            "maxInt: " + found.maxInt.toString()
+          );
+        } else {
+          setStatus("✅ Confirmado! (evento não encontrado no receipt, mas a tx foi minerada)\n" + receipt.hash);
+        }
+
+      } catch (err) {
+        setStatus("❌ Erro: " + (err?.shortMessage || err?.message || String(err)));
+      } finally {
+        btnSpin.disabled = false;
+      }
+    }
+
+    btnConnect.addEventListener("click", connect);
+    btnSpin.addEventListener("click", spin);
+
+    // Tentativa de habilitar botão se já tiver conectado
+    (async () => {
+      if (!window.ethereum) return;
+      provider = new ethers.BrowserProvider(window.ethereum);
+      const accounts = await provider.send("eth_accounts", []);
+      if (accounts && accounts.length) {
+        currentAccount = accounts[0];
+        walletPill.textContent = currentAccount.slice(0,6) + "..." + currentAccount.slice(-4);
+        signer = await provider.getSigner();
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+        btnSpin.disabled = !CONTRACT_ADDRESS || CONTRACT_ADDRESS.includes("COLE_AQUI");
+      }
+    })();
+  </script>
+</body>
+</html>
